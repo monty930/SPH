@@ -210,25 +210,25 @@ private:
 
   void computeDensity()
   {
-    #pragma omp parallel for
+    const int supportRadius = static_cast<int>(_kernel.supportRadius());
+    #pragma omp parallel for schedule(dynamic)
     for(tIndex i = 0; i < particleCount(); ++i) {
       Real density = 0;
       const int gx = static_cast<int>(_pos[i].x);
       const int gy = static_cast<int>(_pos[i].y);
+      
+      const int sx1 = std::max(0, gx - supportRadius);
+      const int sx2 = std::min(_resX - 1, gx + supportRadius + 1);
+      const int sy1 = std::max(0, gy - supportRadius);
+      const int sy2 = std::min(_resY - 1, gy + supportRadius + 1);
 
-      const int sx1 = std::max(0, gx - static_cast<int>(_kernel.supportRadius()));
-      const int sx2 = std::min(_resX - 1, gx + static_cast<int>(_kernel.supportRadius()) + 1);
-      const int sy1 = std::max(0, gy - static_cast<int>(_kernel.supportRadius()));
-      const int sy2 = std::min(_resY - 1, gy + static_cast<int>(_kernel.supportRadius()) + 1);
-
-
-      for(int gx = sx1; gx <= sx2; ++gx) {
-        for(int gy = sy1; gy <= sy2; ++gy) {
-          for(size_t j = 0; j < _pidxInGrid[idx1d(gx, gy)].size(); ++j) {
-            tIndex jidx = _pidxInGrid[idx1d(gx, gy)][j];
+      for(int nx = sx1; nx <= sx2; ++nx) {
+        for(int ny = sy1; ny <= sy2; ++ny) {
+          const std::vector<tIndex>& neighbors = _pidxInGrid[idx1d(nx, ny)];
+          for (tIndex jidx : neighbors) {
             Vec2f rij = _pos[i] - _pos[jidx];
             Real distance = rij.length();
-            if(distance < _kernel.supportRadius()) {
+            if (distance < supportRadius) {
               density += _m0 * _kernel.w(rij);
             }
           }
@@ -237,6 +237,7 @@ private:
       _d[i] = density;
     }
   }
+
 
   void computePressure()
   {
@@ -260,17 +261,29 @@ private:
 
   void applyPressureForce()
   {
-    #pragma omp parallel for
-    for(size_t i = 0; i < particleCount(); ++i) {
+    const int supportRadius = static_cast<int>(_kernel.supportRadius());
+    #pragma omp parallel for schedule(dynamic)
+    for(tIndex i = 0; i < particleCount(); ++i) {
       Vec2f pressureForce(0.0, 0.0);
-      for(size_t j = 0; j < particleCount(); ++j) {
-        if(i != j) {
-          Vec2f rij = _pos[i] - _pos[j];
-          Real distance = rij.length();
-          if(distance < _kernel.supportRadius()) {
-            Real pi = _p[i];
-            Real pj = _p[j];
-            pressureForce -= _m0 * (pi / (_d[i] * _d[i]) + pj / (_d[j] * _d[j])) * _kernel.grad_w(rij, distance);
+      const int gx = static_cast<int>(_pos[i].x);
+      const int gy = static_cast<int>(_pos[i].y);
+      
+      const int sx1 = std::max(0, gx - supportRadius);
+      const int sx2 = std::min(_resX - 1, gx + supportRadius + 1);
+      const int sy1 = std::max(0, gy - supportRadius);
+      const int sy2 = std::min(_resY - 1, gy + supportRadius + 1);
+
+      for(int nx = sx1; nx <= sx2; ++nx) {
+        for(int ny = sy1; ny <= sy2; ++ny) {
+          const std::vector<tIndex>& neighbors = _pidxInGrid[idx1d(nx, ny)];
+          for (tIndex jidx : neighbors) {
+            Vec2f rij = _pos[i] - _pos[jidx];
+            Real distance = rij.length();
+            if (distance < supportRadius && i != jidx) {
+              Real pi = _p[i];
+              Real pj = _p[jidx];
+              pressureForce -= _m0 * (pi / (_d[i] * _d[i]) + pj / (_d[jidx] * _d[jidx])) * _kernel.grad_w(rij, distance);
+            }
           }
         }
       }
@@ -285,7 +298,7 @@ private:
 
   void updateVelocity()
   {
-    #pragma omp parallel for
+    #pragma omp parallel for schedule(dynamic)
     for (tIndex i = 0; i < particleCount(); ++i) {
       _vel[i] += _dt * _acc[i];
     }
@@ -293,7 +306,7 @@ private:
 
   void updatePosition()
   {
-    #pragma omp parallel for
+    #pragma omp parallel for schedule(dynamic)
     for (tIndex i = 0; i < particleCount(); ++i) {
       _pos[i] += _dt * _vel[i];
     }
