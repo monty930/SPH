@@ -216,9 +216,9 @@ private:
       const int gx = static_cast<int>(_pos[i].x);
       const int gy = static_cast<int>(_pos[i].y);
 
-      const int sx1 = std::max(0, gx - static_cast<int>(_kernel.supportRadius()) - 1);
+      const int sx1 = std::max(0, gx - static_cast<int>(_kernel.supportRadius()));
       const int sx2 = std::min(_resX - 1, gx + static_cast<int>(_kernel.supportRadius()) + 1);
-      const int sy1 = std::max(0, gy - static_cast<int>(_kernel.supportRadius()) - 1);
+      const int sy1 = std::max(0, gy - static_cast<int>(_kernel.supportRadius()));
       const int sy2 = std::min(_resY - 1, gy + static_cast<int>(_kernel.supportRadius()) + 1);
 
 
@@ -493,7 +493,8 @@ void initOpenGL()
 
 void init()
 {
-  gSolver.initScene(48, 32, 16, 16);
+  // gSolver.initScene(48, 32, 16, 16);
+  gSolver.initScene(20, 20, 10, 10);
 
   initGLFW();                   // Windowing system
   initOpenGL();
@@ -588,8 +589,8 @@ void update(const float currentTime)
     // gAppTimerLastClockTime = currentTime;
     // gAppTimer += dt;
 
-    // solve 10 steps
-    for(int i=0; i<10; ++i) gSolver.update();
+    // solve 30 steps
+    for(int i=0; i<30; ++i) gSolver.update();
   }
 }
 
