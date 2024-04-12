@@ -188,33 +188,94 @@ public:
     const Real k,               // NOTE: You can use _k for k here.
     const Real gamma=7.0)
   {
-    // TODO: pressure calculation
+    // pressure calculation
+    return k * (std::pow(d / d0, gamma) - 1);
   }
 
 private:
   void buildNeighbor()
   {
-    // TODO:
+    _pidxInGrid.clear();
+    _pidxInGrid.resize(_resX * _resY);
+    
+    for(tIndex i = 0; i < particleCount(); ++i) {
+      const int gx = static_cast<int>(_pos[i].x);
+      const int gy = static_cast<int>(_pos[i].y);
+
+      if(gx >= 0 && gx < _resX && gy >= 0 && gy < _resY) {
+        _pidxInGrid[idx1d(gx, gy)].push_back(i);
+      }
+    }
   }
 
   void computeDensity()
   {
-    // TODO:
+    #pragma omp parallel for
+    for(tIndex i = 0; i < particleCount(); ++i) {
+      Real density = 0;
+      const int gx = static_cast<int>(_pos[i].x);
+      const int gy = static_cast<int>(_pos[i].y);
+
+      const int sx1 = std::max(0, gx - static_cast<int>(_kernel.supportRadius()) - 1);
+      const int sx2 = std::min(_resX - 1, gx + static_cast<int>(_kernel.supportRadius()) + 1);
+      const int sy1 = std::max(0, gy - static_cast<int>(_kernel.supportRadius()) - 1);
+      const int sy2 = std::min(_resY - 1, gy + static_cast<int>(_kernel.supportRadius()) + 1);
+
+
+      for(int gx = sx1; gx <= sx2; ++gx) {
+        for(int gy = sy1; gy <= sy2; ++gy) {
+          for(size_t j = 0; j < _pidxInGrid[idx1d(gx, gy)].size(); ++j) {
+            tIndex jidx = _pidxInGrid[idx1d(gx, gy)][j];
+            Vec2f rij = _pos[i] - _pos[jidx];
+            Real distance = rij.length();
+            if(distance < _kernel.supportRadius()) {
+              density += _m0 * _kernel.w(rij);
+            }
+          }
+        }
+      }
+      _d[i] = density;
+    }
   }
 
   void computePressure()
   {
-    // TODO:
+    #pragma omp parallel for
+    for(tIndex i = 0; i < particleCount(); ++i) {
+      _p[i] = _k * (std::pow((_d[i] / _d0), _gamma) - 1.0);
+      
+      if (_p[i] < 0) {
+        _p[i] = 0;
+      }
+    }
   }
 
   void applyBodyForce()
   {
-    // TODO:
+    #pragma omp parallel for
+    for (tIndex i = 0; i < particleCount(); ++i) {
+      _acc[i] += _g;
+    }
   }
 
   void applyPressureForce()
   {
-    // TODO:
+    #pragma omp parallel for
+    for(size_t i = 0; i < particleCount(); ++i) {
+      Vec2f pressureForce(0.0, 0.0);
+      for(size_t j = 0; j < particleCount(); ++j) {
+        if(i != j) {
+          Vec2f rij = _pos[i] - _pos[j];
+          Real distance = rij.length();
+          if(distance < _kernel.supportRadius()) {
+            Real pi = _p[i];
+            Real pj = _p[j];
+            pressureForce -= _m0 * (pi / (_d[i] * _d[i]) + pj / (_d[j] * _d[j])) * _kernel.grad_w(rij, distance);
+          }
+        }
+      }
+      _acc[i] += pressureForce;
+    }
   }
 
   void applyViscousForce()
@@ -224,12 +285,18 @@ private:
 
   void updateVelocity()
   {
-    // TODO:
+    #pragma omp parallel for
+    for (tIndex i = 0; i < particleCount(); ++i) {
+      _vel[i] += _dt * _acc[i];
+    }
   }
 
   void updatePosition()
   {
-    // TODO:
+    #pragma omp parallel for
+    for (tIndex i = 0; i < particleCount(); ++i) {
+      _pos[i] += _dt * _vel[i];
+    }
   }
 
   // simple collision detection/resolution for each particle
