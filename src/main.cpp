@@ -77,19 +77,24 @@ class SphSolver
 {
 public:
   explicit SphSolver(
-      const Real nu = 0.08, const Real h = 0.5, const Real density = 1e3,
-      const Vec2f g = Vec2f(0, -9.8), const Real eta = 0.01, const Real gamma = 7.0) : _kernel(h), _nu(nu), _h(h), _d0(density),
-                                                                                       _g(g), _eta(eta), _gamma(gamma)
-  {
-    _dt = 0.0005;
-    _c = std::fabs(_g.y) / _eta;
-    _k = _d0 * _c * _c / _gamma;
-  }
+      const Real h = 0.5,
+      const Vec2f g = Vec2f(0, -9.8), 
+      const Real dt = 0.0005,
+      const Real k_spring = 2.0,
+      const Real k_dens = 0.1,
+      const Real k_near = 1.0,
+      const Real rho_0 = 1.0,
+      const Real alfa = 0.1,
+      const Real gamma = 0.1,
+      const Real beta = 0.1,
+      const Real sigma = 0.1
+  ) : _kernel(h), _h(h), _dt(dt), _g(g), _k_spring(k_spring), _k_dens(k_dens), _k_near(k_near), _rho_0(rho_0), _alfa(alfa), _gamma(gamma), _beta(beta), _sigma(sigma)
+  {}
 
   // assume an arbitrary grid with the size of res_x*res_y; a fluid mass fill up
   // the size of f_width, f_height; each cell is sampled with 2x2 particles.
   void initScene(
-      const int res_x, const int res_y, const int f_width, const int f_height)
+      const int res_x, const int res_y, const int f_width, const int f_height, const int pos_start_x = 6, const int pos_start_y = 3)
   {
     _pos.clear();
 
@@ -103,9 +108,9 @@ public:
     _t = static_cast<Real>(res_y) - 0.5 * _h;
 
     // sample a fluid mass
-    for (int j = 0; j < f_height; ++j)
+    for (int j = pos_start_y; j < pos_start_y + f_height; ++j)
     {
-      for (int i = 0; i < f_width; ++i)
+      for (int i = pos_start_x; i < pos_start_x + f_width; ++i)
       {
         _pos.push_back(Vec2f(i + 0.25, j + 0.25));
         _pos.push_back(Vec2f(i + 0.75, j + 0.25));
@@ -114,7 +119,6 @@ public:
       }
     }
 
-    // copy _pos into _prev_pos
     _prev_pos = _pos;
 
     // set spring lengths (no springs at the beginning)
@@ -125,24 +129,30 @@ public:
       _Lij[i].resize(particleCount());
       for (tIndex j = 0; j < particleCount(); ++j)
       {
-        _Lij[i][j] = -1.0;
+        _Lij[i][j] = -1.0; // no spring
       }
     }
 
-    // make sure for the other particle quantities
     _vel = std::vector<Vec2f>(_pos.size(), Vec2f(0, 0));
-    _p = std::vector<Real>(_pos.size(), 0);
-    _d = std::vector<Real>(_pos.size(), 0);
 
-    _col = std::vector<float>(_pos.size() * 4, 1.0); // RGBA
+    _col = std::vector<float>(_pos.size() * 4, 0.0); // RGBA
     _vln = std::vector<float>(_pos.size() * 4, 0.0); // GL_LINES
+
+    // adjust color
+    for (tIndex i = 0; i < particleCount(); ++i)
+    {
+      _col[i * 4 + 0] = 0.0;
+      _col[i * 4 + 1] = 0.0;
+      _col[i * 4 + 2] = 1.0;
+      _col[i * 4 + 3] = 1.0;
+    }
   }
 
   void update()
   {
     std::cout << '.' << std::flush;
 
-    buildNeighbor();
+    buildNeighbour();
   
     // simulation step based on related paper (algorithm 1)
     for (tIndex i = 0; i < particleCount(); ++i)
@@ -185,11 +195,10 @@ public:
   int resY() const { return _resY; }
 
 private:
-  void buildNeighbor()
+  void buildNeighbour()
   {
     _pidxInGrid.clear();
     _pidxInGrid.resize(_resX * _resY);
-    int count = 0;
 
     for (tIndex i = 0; i < particleCount(); ++i)
     {
@@ -199,10 +208,8 @@ private:
       if (gx >= 0 && gx < _resX && gy >= 0 && gy < _resY)
       {
         _pidxInGrid[idx1d(gx, gy)].push_back(i);
-        count++;
       }
     }
-    // std::cout << "count: " << count << std::endl;
   }
 
   // getNeighbourBounds
@@ -219,9 +226,48 @@ private:
   }
 
   void applyViscosity() {
-    //TODO
+    const int rad = static_cast<int>(_kernel.supportRadius()); // support radius (in paper: h)
+    for (tIndex i = 0; i < particleCount(); ++i)
+    {
+      std::tuple<int, int, int, int> bounds = getNeighbourBounds(i);
+      const int sx1 = std::get<0>(bounds), sx2 = std::get<1>(bounds);
+      const int sy1 = std::get<2>(bounds), sy2 = std::get<3>(bounds);
+      const Real sigma = 0.1;
+      const Real beta = 0.1;
+      
+      for (int gx = sx1; gx <= sx2; ++gx)
+      {
+        for (int gy = sy1; gy <= sy2; ++gy)
+        {
+          const std::vector<tIndex> &neighbuors = _pidxInGrid[idx1d(gx, gy)];
+          for (tIndex j : neighbuors) // for each particle i in neighbours(i)
+          {
+            if (i >= j)
+              continue;
+            const Vec2f rij = _pos[j] - _pos[i];
+            const Real r = rij.length();
+            const Vec2f rij1 = rij / r;
+            if (r < rad) {
+              const Real q = 1 - r / rad;
+              
+              const Vec2f vel_diff = _vel[i] - _vel[j];
+              const Real u = vel_diff[0] * rij1[0] + vel_diff[1] * rij1[1];
+              
+              if (u > 0) {
+                // linear and quadratic viscosity impulses
+                const Vec2f I = _dt * q * (sigma * u + beta * u * u) * rij1;
+                const Vec2f I2 = I / 2;
+                _vel[i] -= I2;
+                _vel[j] += I2;
+              }
+            }
+          }
+        }
+      }
+    }
   }
 
+  // Plasticity
   void adjustSprings() {
     const int rad = static_cast<int>(_kernel.supportRadius()); // support radius (in paper: h)
     for (tIndex i = 0; i < particleCount(); ++i)
@@ -233,8 +279,8 @@ private:
       {
         for (int gy = sy1; gy <= sy2; ++gy)
         {
-          const std::vector<tIndex> &neighbors = _pidxInGrid[idx1d(gx, gy)];
-          for (tIndex j : neighbors) // for each particle j in neighbours(i)
+          const std::vector<tIndex> &neighbuors = _pidxInGrid[idx1d(gx, gy)];
+          for (tIndex j : neighbuors) // for each particle j in neighbours(i)
           {
             if (i >= j)
               continue;
@@ -273,8 +319,10 @@ private:
     }
   }
 
+  // Elasticity
   void applySpringDisplacements() {
     const int rad = static_cast<int>(_kernel.supportRadius()); // support radius (in paper: h)
+    const Real k_spring = 2.0;
     // for each spring (i, j)
     for (tIndex i = 0; i < particleCount(); ++i)
     {
@@ -288,7 +336,7 @@ private:
         const Vec2f rij = _pos[j] - _pos[i];
         const Real r = rij.length();
         const Vec2f rij1 = rij / r;
-        const Vec2f D = _dt * _dt * (1 - L / rad) * (L - r) * rij1;
+        const Vec2f D = _dt * _dt * k_spring * (1 - L / rad) * (L - r) * rij1;
         const Vec2f D2 = D / 2;
         _pos[i] -= D2;
         _pos[j] += D2;
@@ -297,78 +345,63 @@ private:
   }
 
   void doubleDensityRelaxation() {
-    // const int rad = static_cast<int>(_kernel.supportRadius()); // support radius (in paper: h)
-    // for (tIndex i = 0; i < particleCount(); ++i)
-    // {
-    //   Real rho = 0;
-    //   Real rho_near = 0;
-    //   Vec2f dx = Vec2f(0, 0);
+    const int rad = static_cast<int>(_kernel.supportRadius()); // support radius (in paper: h)
+    for (tIndex i = 0; i < particleCount(); ++i)
+    {
+      Real rho = 0;
+      Real rho_near = 0;
+      Vec2f dx = Vec2f(0, 0);
       
-    //   std::tuple<int, int, int, int> bounds = getNeighbourBounds(i);
-    //   const int sx1 = std::get<0>(bounds), sx2 = std::get<1>(bounds);
-    //   const int sy1 = std::get<2>(bounds), sy2 = std::get<3>(bounds);
-    //   for (int gx = sx1; gx <= sx2; ++gx)
-    //   {
-    //     for (int gy = sy1; gy <= sy2; ++gy)
-    //     {
-    //       const std::vector<tIndex> &neighbors = _pidxInGrid[idx1d(gx, gy)];
-    //       for (tIndex j : neighbors) // for each particle j in neighbours(i)
-    //       {
-    //         if (i == j)
-    //           continue;
-    //         const Vec2f rij = _pos[j] - _pos[i];
-    //         const Real r = rij.length();
-    //         // compute density and near-density
-    //         if (r < rad)
-    //         {
-    //           const Real q = 1. - r / rad;
-    //           rho += q * q;
-    //           rho_near += q * q * q;
-    //         }
-    //       }
-    //       // std::cout << "rho: " << rho << std::endl;
-    //       // std::cout << "rho_near: " << rho_near << std::endl;
-
-    //       const Real k = 1.0;
-    //       const Real k_near = 1.0;
-    //       const Real rho_0 = 1.0;
-
-    //       // std::cout << "rad, k, k_near, rho_0: " << rad << " " << k << " " << k_near << " " << rho_0 << std::endl;
+      std::tuple<int, int, int, int> bounds = getNeighbourBounds(i);
+      const int sx1 = std::get<0>(bounds), sx2 = std::get<1>(bounds);
+      const int sy1 = std::get<2>(bounds), sy2 = std::get<3>(bounds);
+      for (int gx = sx1; gx <= sx2; ++gx)
+      {
+        for (int gy = sy1; gy <= sy2; ++gy)
+        {
+          const std::vector<tIndex> &neighbuors = _pidxInGrid[idx1d(gx, gy)];
+          for (tIndex j : neighbuors) // for each particle j in neighbours(i)
+          {
+            if (i == j)
+              continue;
+            const Vec2f rij = _pos[j] - _pos[i];
+            const Real r = rij.length();
+            // compute density and near-density
+            if (r < rad)
+            {
+              const Real q = 1. - r / rad;
+              rho += q * q;
+              rho_near += q * q * q;
+            }
+          }
           
-    //       // compute pressure and near-pressure
-    //       Real press = k * (rho - rho_0); // TODO CHECK _k an _d0
-    //       if (press < 0.0)
-    //         press = 0.0;
-    //       // const Real press_near = k_near * rho_near;
-    //       const Real press_near = 0.0;
-    //       // std::cout << "press: " << press << std::endl;
-    //       // std::cout << "press_near: " << press_near << std::endl;
-    //       dx = Vec2f(0, 0);
-    //       for (tIndex j : neighbors) // for each particle j in neighbours(i)
-    //       {
-    //         if (i == j)
-    //           continue;
-    //         const Vec2f rij = _pos[j] - _pos[i];
-    //         const Real r = rij.length();
-    //         // std::cout << "r: " << r << std::endl;
-    //         // exit(1);
-    //         if (r < rad)
-    //         {
-    //           // apply displacements
-    //           const Real q = 1 - r / rad;
-    //           const Vec2f rij1 = rij / r; // unit vector from particle i to j
-    //           const Vec2f D = _dt * _dt * (press * q + press_near * q * q) * rij1;
-    //           const Vec2f D2 = D / 2;
-    //           _pos[j] += D2;
-    //           dx -= D2;
-    //         }
-    //       }
-    //       _pos[i] += dx;
-    //       // if (dx.length() > 0.0)
-    //         // std::cout << "dx: " << dx << std::endl;
-    //     }
-    //   }
-    // }
+          // compute pressure and near-pressure
+          Real press = _k_dens * (rho - _rho_0);
+          if (press < 0.0)
+            press = 0.0;
+          const Real press_near = _k_near * rho_near;
+          dx = Vec2f(0, 0);
+          for (tIndex j : neighbuors) // for each particle j in neighbours(i)
+          {
+            if (i == j)
+              continue;
+            const Vec2f rij = _pos[j] - _pos[i];
+            const Real r = rij.length();
+            if (r < rad)
+            {
+              // apply displacements
+              const Real q = 1 - r / rad;
+              const Vec2f rij1 = rij / r; // unit vector from particle i to j
+              const Vec2f D = _dt * _dt * (press * q + press_near * q * q) * rij1;
+              const Vec2f D2 = D / 2;
+              _pos[j] += D2;
+              dx -= D2;
+            }
+          }
+          _pos[i] += dx;
+        }
+      }
+    }
   }
 
   // simple collision detection/resolution for each particle
@@ -412,10 +445,8 @@ private:
   std::vector<Vec2f> _pos; // position
   std::vector<Vec2f> _prev_pos; // previous position
   std::vector<Vec2f> _vel; // velocity
-  std::vector<Real> _p;    // pressure
-  std::vector<Real> _d;    // density
 
-  std::vector<std::vector<tIndex>> _pidxInGrid; // to find neighbor particles
+  std::vector<std::vector<tIndex>> _pidxInGrid; // to find neighbour particles
 
   std::vector<std::vector<Real>> _Lij;
 
@@ -430,20 +461,21 @@ private:
   // wall
   Real _l, _r, _b, _t; // wall (boundary)
 
-  // SPH coefficients
-  Real _nu; // viscosity coefficient
-  Real _d0; // rest density
   Real _h;  // particle spacing (i.e., diameter)
   Vec2f _g; // gravity
 
-  Real _k;  // EOS coefficient
-
-  Real _eta;
-  Real _c;     // speed of sound
-  Real _gamma; // EOS power factor
+  Real _k_spring = 2.0; // spring constant
+  Real _k_dens = 0.1; // density constant
+  Real _k_near = 1.0; // near-density constant
+  Real _rho_0 = 1.0; // rest density
+  Real _alfa = 0.1;
+  Real _gamma = 0.1;
+  Real _beta = 0.1; 
+  Real _sigma = 0.1;
 };
 
-SphSolver gSolver(0.08, 0.5, 1e3, Vec2f(0, -9.8), 0.01, 7.0);
+// SphSolver gSolver(0.08, 0.5, 1e3, Vec2f(0, -9.8), 0.01, 7.0);
+SphSolver gSolver(0.5, Vec2f(0, -9.8), 0.0005, 2.0, 0.1, 1.0, 1.0, 1.0, 0.1, 0.1, 0.1);
 
 void printHelp()
 {
@@ -468,7 +500,7 @@ void windowSizeCallback(GLFWwindow *window, int width, int height)
   glOrtho(0, gSolver.resX(), 0, gSolver.resY(), 0, 1);
 }
 
-// Executed each time a key is entered.
+// User-defined keyboard callback function
 void keyCallback(GLFWwindow *window, int key, int scancode, int action, int mods)
 {
   if (action == GLFW_PRESS && key == GLFW_KEY_H)
@@ -501,18 +533,15 @@ void keyCallback(GLFWwindow *window, int key, int scancode, int action, int mods
 
 void initGLFW()
 {
-  // Initialize GLFW, the library responsible for window management
+  // Initialize GLFW
   if (!glfwInit())
   {
     std::cerr << "ERROR: Failed to init GLFW" << std::endl;
     std::exit(EXIT_FAILURE);
   }
 
-  // Before creating the window, set some option flags
   glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 2);
   glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
-  // glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE); // only if requesting 3.0 or above
-  // glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
   glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_ANY_PROFILE); // for OpenGL below 3.2
   glfwWindowHint(GLFW_RESIZABLE, GL_TRUE);
 
@@ -521,7 +550,7 @@ void initGLFW()
   gWindowHeight = gSolver.resY() * kViewScale;
   gWindow = glfwCreateWindow(
       gSolver.resX() * kViewScale, gSolver.resY() * kViewScale,
-      "Basic SPH Simulator", nullptr, nullptr);
+      "Viscoelastic fluid simulator", nullptr, nullptr);
   if (!gWindow)
   {
     std::cerr << "ERROR: Failed to open window" << std::endl;
@@ -571,8 +600,7 @@ void initOpenGL()
 
 void init()
 {
-  // gSolver.initScene(48, 32, 16, 16);
-  gSolver.initScene(20, 20, 10, 10);
+  gSolver.initScene(30, 30, 3, 10);
 
   initGLFW(); // Windowing system
   initOpenGL();
@@ -587,7 +615,8 @@ void clear()
 // The main rendering call
 void render()
 {
-  glClearColor(.4f, .4f, .4f, 1.0f);
+  // scene color
+  glClearColor(1.0f, 1.0f, 1.0f, 1.0f);
   glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
   // grid guides
@@ -596,16 +625,16 @@ void render()
     glBegin(GL_LINES);
     for (int i = 1; i < gSolver.resX(); ++i)
     {
-      glColor3f(0.3, 0.3, 0.3);
+      glColor3f(0.88, 0.88, 0.88);
       glVertex2f(static_cast<Real>(i), 0.0);
-      glColor3f(0.3, 0.3, 0.3);
+      glColor3f(0.88, 0.88, 0.88);
       glVertex2f(static_cast<Real>(i), static_cast<Real>(gSolver.resY()));
     }
     for (int j = 1; j < gSolver.resY(); ++j)
     {
-      glColor3f(0.3, 0.3, 0.3);
+      glColor3f(0.88, 0.88, 0.88);
       glVertex2f(0.0, static_cast<Real>(j));
-      glColor3f(0.3, 0.3, 0.3);
+      glColor3f(0.88, 0.88, 0.88);
       glVertex2f(static_cast<Real>(gSolver.resX()), static_cast<Real>(j));
     }
     glEnd();
@@ -668,13 +697,8 @@ void update(const float currentTime)
 {
   if (!gAppTimerStoppedP)
   {
-    // NOTE: When you want to use application's dt ...
-    // const float dt = currentTime - gAppTimerLastClockTime;
-    // gAppTimerLastClockTime = currentTime;
-    // gAppTimer += dt;
-
-    // solve 30 steps
-    for (int i = 0; i < 30; ++i)
+    // solve 20 steps
+    for (int i = 0; i < 20; ++i)
       gSolver.update();
   }
 }
