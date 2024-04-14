@@ -107,15 +107,17 @@ public:
     _b = 0.5 * _h;
     _t = static_cast<Real>(res_y) - 0.5 * _h;
 
-    // sample a fluid mass
-    for (int j = pos_start_y; j < pos_start_y + f_height; ++j)
+    // sample fluid: circle drop
+    const Real cx = 0.5 * res_x; // center
+    const Real cy = 0.5 * res_y; // center
+    const Real rad = 0.1 * res_x; // radius
+    for (float j = 0.; j < res_y; j += 0.5)
     {
-      for (int i = pos_start_x; i < pos_start_x + f_width; ++i)
+      for (float i = 0.; i < res_x; i += 0.5)
       {
-        _pos.push_back(Vec2f(i + 0.25, j + 0.25));
-        _pos.push_back(Vec2f(i + 0.75, j + 0.25));
-        _pos.push_back(Vec2f(i + 0.25, j + 0.75));
-        _pos.push_back(Vec2f(i + 0.75, j + 0.75));
+        const Vec2f p(i + 0.125, j + 0.125);
+        if ((p - Vec2f(cx, cy)).length() < rad)
+          _pos.push_back(p);
       }
     }
 
