@@ -64,7 +64,7 @@ public:
   {
     const Real h2 = square(h), h3 = h2 * h;
     _h = h;
-    _sr = 4e0 * h; // was: 2
+    _sr = 2e0 * h; // was: 2
   }
   Real supportRadius() const { return _sr; }
 
@@ -116,18 +116,6 @@ public:
 
     // copy _pos into _prev_pos
     _prev_pos = _pos;
-
-    // set spring lengths (no springs at the beginning)
-    _Lij.clear();
-    _Lij.resize(_pos.size());
-    for (tIndex i = 0; i < particleCount(); ++i)
-    {
-      _Lij[i].resize(particleCount());
-      for (tIndex j = 0; j < particleCount(); ++j)
-      {
-        _Lij[i][j] = -1.0;
-      }
-    }
 
     // make sure for the other particle quantities
     _vel = std::vector<Vec2f>(_pos.size(), Vec2f(0, 0));
@@ -205,7 +193,6 @@ private:
     // std::cout << "count: " << count << std::endl;
   }
 
-  // getNeighbourBounds
   std::tuple<int, int, int, int> getNeighbourBounds(const tIndex i) {
     const int supportRadius = static_cast<int>(_kernel.supportRadius());
     const int gx = static_cast<int>(_pos[i].x);
@@ -223,9 +210,21 @@ private:
   }
 
   void adjustSprings() {
+    //TODO
+  }
+
+  void applySpringDisplacements() {
+    //TODO
+  }
+
+  void doubleDensityRelaxation() {
     const int rad = static_cast<int>(_kernel.supportRadius()); // support radius (in paper: h)
     for (tIndex i = 0; i < particleCount(); ++i)
     {
+      Real rho = 0;
+      Real rho_near = 0;
+      Vec2f dx = Vec2f(0, 0);
+      
       std::tuple<int, int, int, int> bounds = getNeighbourBounds(i);
       const int sx1 = std::get<0>(bounds), sx2 = std::get<1>(bounds);
       const int sy1 = std::get<2>(bounds), sy2 = std::get<3>(bounds);
@@ -236,139 +235,61 @@ private:
           const std::vector<tIndex> &neighbors = _pidxInGrid[idx1d(gx, gy)];
           for (tIndex j : neighbors) // for each particle j in neighbours(i)
           {
-            if (i >= j)
+            if (i == j)
               continue;
             const Vec2f rij = _pos[j] - _pos[i];
             const Real r = rij.length();
+            // compute density and near-density
             if (r < rad)
             {
-              // apply and remove springs
-              if (_Lij[i][j] < 0.0) // no spring
-              {
-                _Lij[i][j] = rad;
-              }
-              // tolerable deformation = yield ratio * rest length
-              const Real gamma = 0.1;
-              const Real alfa = 0.1;
-              const Real tol_def = gamma * _Lij[i][j];
-              if (r > _Lij[i][j] + tol_def)
-              {
-                _Lij[i][j] += _dt * alfa * (r - _Lij[i][j] - tol_def);
-              } else if (r < _Lij[i][j] - tol_def)
-              {
-                _Lij[i][j] -= _dt * alfa * (_Lij[i][j] - tol_def - r);
-              }
+              const Real q = 1. - r / rad;
+              rho += q * q;
+              rho_near += q * q * q;
             }
           }
+          // std::cout << "rho: " << rho << std::endl;
+          // std::cout << "rho_near: " << rho_near << std::endl;
+
+          const Real k = 1.0;
+          const Real k_near = 1.0;
+          const Real rho_0 = 2.0;
+
+          // std::cout << "rad, k, k_near, rho_0: " << rad << " " << k << " " << k_near << " " << rho_0 << std::endl;
+          
+          // compute pressure and near-pressure
+          Real press = k * (rho - rho_0); // TODO CHECK _k an _d0
+          if (press < 0.0)
+            press = 0.0;
+          // const Real press_near = k_near * rho_near;
+          const Real press_near = 0.0;
+          // std::cout << "press: " << press << std::endl;
+          // std::cout << "press_near: " << press_near << std::endl;
+          dx = Vec2f(0, 0);
+          for (tIndex j : neighbors) // for each particle j in neighbours(i)
+          {
+            if (i == j)
+              continue;
+            const Vec2f rij = _pos[j] - _pos[i];
+            const Real r = rij.length();
+            // std::cout << "r: " << r << std::endl;
+            // exit(1);
+            if (r < rad)
+            {
+              // apply displacements
+              const Real q = 1 - r / rad;
+              const Vec2f rij1 = rij / r; // unit vector from particle i to j
+              const Vec2f D = _dt * _dt * (press * q + press_near * q * q) * rij1;
+              const Vec2f D2 = D / 2;
+              _pos[j] += D2;
+              dx -= D2;
+            }
+          }
+          _pos[i] += dx;
+          // if (dx.length() > 0.0)
+            // std::cout << "dx: " << dx << std::endl;
         }
       }
-      // for each spring, if it is greater then rad, remove it
-      for (tIndex j = 0; j < particleCount(); ++j)
-      {
-        if (i >= j)
-          continue;
-        if (_Lij[i][j] > rad)
-          _Lij[i][j] = -1.0;
-      }
     }
-  }
-
-  void applySpringDisplacements() {
-    const int rad = static_cast<int>(_kernel.supportRadius()); // support radius (in paper: h)
-    // for each spring (i, j)
-    for (tIndex i = 0; i < particleCount(); ++i)
-    {
-      for (tIndex j = 0; j < particleCount(); ++j)
-      {
-        if (i >= j)
-          continue;
-        const Real L = _Lij[i][j];
-        if (L < 0.0)
-          continue;
-        const Vec2f rij = _pos[j] - _pos[i];
-        const Real r = rij.length();
-        const Vec2f rij1 = rij / r;
-        const Vec2f D = _dt * _dt * (1 - L / rad) * (L - r) * rij1;
-        const Vec2f D2 = D / 2;
-        _pos[i] -= D2;
-        _pos[j] += D2;
-      }
-    }
-  }
-
-  void doubleDensityRelaxation() {
-    // const int rad = static_cast<int>(_kernel.supportRadius()); // support radius (in paper: h)
-    // for (tIndex i = 0; i < particleCount(); ++i)
-    // {
-    //   Real rho = 0;
-    //   Real rho_near = 0;
-    //   Vec2f dx = Vec2f(0, 0);
-      
-    //   std::tuple<int, int, int, int> bounds = getNeighbourBounds(i);
-    //   const int sx1 = std::get<0>(bounds), sx2 = std::get<1>(bounds);
-    //   const int sy1 = std::get<2>(bounds), sy2 = std::get<3>(bounds);
-    //   for (int gx = sx1; gx <= sx2; ++gx)
-    //   {
-    //     for (int gy = sy1; gy <= sy2; ++gy)
-    //     {
-    //       const std::vector<tIndex> &neighbors = _pidxInGrid[idx1d(gx, gy)];
-    //       for (tIndex j : neighbors) // for each particle j in neighbours(i)
-    //       {
-    //         if (i == j)
-    //           continue;
-    //         const Vec2f rij = _pos[j] - _pos[i];
-    //         const Real r = rij.length();
-    //         // compute density and near-density
-    //         if (r < rad)
-    //         {
-    //           const Real q = 1. - r / rad;
-    //           rho += q * q;
-    //           rho_near += q * q * q;
-    //         }
-    //       }
-    //       // std::cout << "rho: " << rho << std::endl;
-    //       // std::cout << "rho_near: " << rho_near << std::endl;
-
-    //       const Real k = 1.0;
-    //       const Real k_near = 1.0;
-    //       const Real rho_0 = 1.0;
-
-    //       // std::cout << "rad, k, k_near, rho_0: " << rad << " " << k << " " << k_near << " " << rho_0 << std::endl;
-          
-    //       // compute pressure and near-pressure
-    //       Real press = k * (rho - rho_0); // TODO CHECK _k an _d0
-    //       if (press < 0.0)
-    //         press = 0.0;
-    //       // const Real press_near = k_near * rho_near;
-    //       const Real press_near = 0.0;
-    //       // std::cout << "press: " << press << std::endl;
-    //       // std::cout << "press_near: " << press_near << std::endl;
-    //       dx = Vec2f(0, 0);
-    //       for (tIndex j : neighbors) // for each particle j in neighbours(i)
-    //       {
-    //         if (i == j)
-    //           continue;
-    //         const Vec2f rij = _pos[j] - _pos[i];
-    //         const Real r = rij.length();
-    //         // std::cout << "r: " << r << std::endl;
-    //         // exit(1);
-    //         if (r < rad)
-    //         {
-    //           // apply displacements
-    //           const Real q = 1 - r / rad;
-    //           const Vec2f rij1 = rij / r; // unit vector from particle i to j
-    //           const Vec2f D = _dt * _dt * (press * q + press_near * q * q) * rij1;
-    //           const Vec2f D2 = D / 2;
-    //           _pos[j] += D2;
-    //           dx -= D2;
-    //         }
-    //       }
-    //       _pos[i] += dx;
-    //       // if (dx.length() > 0.0)
-    //         // std::cout << "dx: " << dx << std::endl;
-    //     }
-    //   }
-    // }
   }
 
   // simple collision detection/resolution for each particle
@@ -415,9 +336,7 @@ private:
   std::vector<Real> _p;    // pressure
   std::vector<Real> _d;    // density
 
-  std::vector<std::vector<tIndex>> _pidxInGrid; // to find neighbor particles
-
-  std::vector<std::vector<Real>> _Lij;
+  std::vector<std::vector<tIndex>> _pidxInGrid; // will help you find neighbor particles
 
   std::vector<float> _col; // particle color; just for visualization
   std::vector<float> _vln; // particle velocity lines; just for visualization
