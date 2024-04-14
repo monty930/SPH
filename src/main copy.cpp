@@ -115,6 +115,7 @@ public:
                                                                                        _g(g), _eta(eta), _gamma(gamma)
   {
     _dt = 0.0005;
+    _m0 = _d0 * _h * _h;
     _c = std::fabs(_g.y) / _eta;
     _k = _d0 * _c * _c / _gamma;
   }
@@ -147,9 +148,6 @@ public:
       }
     }
 
-    // copy _pos into _prev_pos
-    _prev_pos = _pos;
-
     // make sure for the other particle quantities
     _vel = std::vector<Vec2f>(_pos.size(), Vec2f(0, 0));
     _acc = std::vector<Vec2f>(_pos.size(), Vec2f(0, 0));
@@ -158,6 +156,8 @@ public:
 
     _col = std::vector<float>(_pos.size() * 4, 1.0); // RGBA
     _vln = std::vector<float>(_pos.size() * 4, 0.0); // GL_LINES
+
+    updateColor();
   }
 
   void update()
@@ -165,35 +165,20 @@ public:
     std::cout << '.' << std::flush;
 
     buildNeighbor();
-  
-    // simulation step based on related paper (algorithm 1)
-    for (tIndex i = 0; i < particleCount(); ++i)
-    {
-      // apply gravity
-      _vel[i] += _dt * _g;
-    }
-    // modify velocities with pairwise viscosity impulses
-    applyViscosity();
-    for (tIndex i = 0; i < particleCount(); ++i)
-    {
-      // save previous position
-      _prev_pos[i] = _pos[i];
-      // advance to predicted position
-      _pos[i] += _dt * _vel[i];
-    }
-    // add and remove springs, change rest lengths
-    adjustSprings();
-    // modify positions according to springs,
-    // double density relaxation, and collisions
-    applySpringDisplacements();
-    doubleDensityRelaxation();
-    resolveCollisions();
-    for (tIndex i = 0; i < particleCount(); ++i)
-    {
-      // use previous position to compute next velocity
-      _vel[i] = (_pos[i] - _prev_pos[i]) / _dt;
-    }
+    computeDensity();
+    computePressure();
 
+    _acc = std::vector<Vec2f>(_pos.size(), Vec2f(0, 0));
+    applyBodyForce();
+    applyPressureForce();
+    applyViscousForce();
+
+    updateVelocity();
+    updatePosition();
+
+    resolveCollision();
+
+    updateColor();
     if (gShowVel)
       updateVelLine();
   }
@@ -205,6 +190,15 @@ public:
 
   int resX() const { return _resX; }
   int resY() const { return _resY; }
+
+  Real equationOfState(
+      const Real d, const Real d0,
+      const Real k, // NOTE: You can use _k for k here.
+      const Real gamma = 7.0)
+  {
+    // pressure calculation
+    return k * (std::pow(d / d0, gamma) - 1);
+  }
 
 private:
   void buildNeighbor()
@@ -224,102 +218,159 @@ private:
     }
   }
 
-  void applyViscosity() {
-    //TODO
-  }
-
-  void adjustSprings() {
-    //TODO
-  }
-
-  void applySpringDisplacements() {
-    //TODO
-  }
-
-  // getNeighbourBounds
-  std::tuple<int, int, int, int> getNeighbourBounds(const tIndex i) {
+  void computeDensity()
+  {
     const int supportRadius = static_cast<int>(_kernel.supportRadius());
-    const int gx = static_cast<int>(_pos[i].x);
-    const int gy = static_cast<int>(_pos[i].y);
-
-    const int sx1 = std::max(0, gx - supportRadius);
-    const int sx2 = std::min(_resX - 1, gx + supportRadius + 1);
-    const int sy1 = std::max(0, gy - supportRadius);
-    const int sy2 = std::min(_resY - 1, gy + supportRadius + 1);
-    return std::make_tuple(sx1, sx2, sy1, sy2);
-  }
-
-  void doubleDensityRelaxation() {
-    const int rad = static_cast<int>(_kernel.supportRadius()); // support radius (in paper: h)
+#pragma omp parallel for schedule(dynamic)
     for (tIndex i = 0; i < particleCount(); ++i)
     {
-      Real rho = 0;
-      Real rho_near = 0;
-      
-      std::tuple<int, int, int, int> bounds = getNeighbourBounds(i);
-      const int sx1 = std::get<0>(bounds), sx2 = std::get<1>(bounds);
-      const int sy1 = std::get<2>(bounds), sy2 = std::get<3>(bounds);
-      for (int gx = sx1; gx <= sx2; ++gx)
+      Real density = 0;
+      const int gx = static_cast<int>(_pos[i].x);
+      const int gy = static_cast<int>(_pos[i].y);
+
+      const int sx1 = std::max(0, gx - supportRadius);
+      const int sx2 = std::min(_resX - 1, gx + supportRadius + 1);
+      const int sy1 = std::max(0, gy - supportRadius);
+      const int sy2 = std::min(_resY - 1, gy + supportRadius + 1);
+
+      for (int nx = sx1; nx <= sx2; ++nx)
       {
-        for (int gy = sy1; gy <= sy2; ++gy)
+        for (int ny = sy1; ny <= sy2; ++ny)
         {
-          const std::vector<tIndex> &neighbors = _pidxInGrid[idx1d(gx, gy)];
-          for (tIndex j : neighbors) // for each particle j in neighbours(i)
+          const std::vector<tIndex> &neighbors = _pidxInGrid[idx1d(nx, ny)];
+          for (tIndex jidx : neighbors)
           {
-            if (i == j)
-              continue;
-            const Vec2f rij = _pos[j] - _pos[i];
-            const Real r = rij.length();
-            // compute density and near-density
-            if (r < rad)
+            Vec2f rij = _pos[i] - _pos[jidx];
+            Real distance = rij.length();
+            if (distance < supportRadius)
             {
-              const Real q = 1. - r / rad;
-              rho += q * q;
-              rho_near += q * q * q;
+              density += _m0 * _kernel.w(rij);
             }
           }
-          // std::cout << "rho: " << rho << std::endl;
-          // std::cout << "rho_near: " << rho_near << std::endl;
-
-          const Real k = 1.0;
-          const Real k_near = 1.0;
-          const Real rho_0 = 1.0;
-
-          // std::cout << "rad, k, k_near, rho_0: " << rad << " " << k << " " << k_near << " " << rho_0 << std::endl;
-          
-          // compute pressure and near-pressure
-          const Real press = k * (rho - rho_0); // TODO CHECK _k an _d0
-          const Real press_near = k_near * rho_near;
-          // std::cout << "press: " << press << std::endl;
-          // std::cout << "press_near: " << press_near << std::endl;
-          Vec2f dx = Vec2f(0, 0);
-          for (tIndex j : neighbors) // for each particle j in neighbours(i)
-          {
-            if (i == j)
-              continue;
-            const Vec2f rij = _pos[j] - _pos[i];
-            const Real r = rij.length();
-            // std::cout << "r: " << r << std::endl;
-            // exit(1);
-            if (r < rad)
-            {
-              // apply displacements
-              const Real q = 1 - r / rad;
-              const Vec2f rij1 = rij / r; // unit vector from particle i to j
-              const Vec2f D = _dt * _dt * (press * q + press_near * q * q) * rij1;
-              const Vec2f D2 = D / 2;
-              _pos[j] += D2;
-              dx -= D2;
-            }
-          }
-          _pos[i] += dx;
         }
+      }
+      _d[i] = density;
+    }
+  }
+
+  void computePressure()
+  {
+#pragma omp parallel for
+    for (tIndex i = 0; i < particleCount(); ++i)
+    {
+      _p[i] = _k * (std::pow((_d[i] / _d0), _gamma) - 1.0);
+
+      if (_p[i] < 0)
+      {
+        _p[i] = 0;
       }
     }
   }
 
+  void applyBodyForce()
+  {
+#pragma omp parallel for
+    for (tIndex i = 0; i < particleCount(); ++i)
+    {
+      _acc[i] += _g;
+    }
+  }
+
+  void applyPressureForce()
+  {
+    const int supportRadius = static_cast<int>(_kernel.supportRadius());
+#pragma omp parallel for schedule(dynamic)
+    for (tIndex i = 0; i < particleCount(); ++i)
+    {
+      Vec2f pressureForce(0.0, 0.0);
+      const int gx = static_cast<int>(_pos[i].x);
+      const int gy = static_cast<int>(_pos[i].y);
+
+      const int sx1 = std::max(0, gx - supportRadius);
+      const int sx2 = std::min(_resX - 1, gx + supportRadius + 1);
+      const int sy1 = std::max(0, gy - supportRadius);
+      const int sy2 = std::min(_resY - 1, gy + supportRadius + 1);
+
+      for (int nx = sx1; nx <= sx2; ++nx)
+      {
+        for (int ny = sy1; ny <= sy2; ++ny)
+        {
+          const std::vector<tIndex> &neighbors = _pidxInGrid[idx1d(nx, ny)];
+          for (tIndex jidx : neighbors)
+          {
+            Vec2f rij = _pos[i] - _pos[jidx];
+            Real distance = rij.length();
+            if (distance < supportRadius && i != jidx)
+            {
+              Real pi = _p[i];
+              Real pj = _p[jidx];
+              pressureForce -= 
+                _m0 * (pi / (_d[i] * _d[i]) + pj / (_d[jidx] * _d[jidx])) * 
+                _kernel.grad_w(rij, distance);
+            }
+          }
+        }
+      }
+      _acc[i] += pressureForce;
+    }
+  }
+
+  void applyViscousForce()
+  {
+    const int supportRadius = static_cast<int>(_kernel.supportRadius());
+#pragma omp parallel for schedule(dynamic)
+    for (tIndex i = 0; i < particleCount(); ++i)
+    {
+      Vec2f viscousForce(0.0, 0.0);
+      const int gx = static_cast<int>(_pos[i].x);
+      const int gy = static_cast<int>(_pos[i].y);
+
+      const int sx1 = std::max(0, gx - supportRadius);
+      const int sx2 = std::min(_resX - 1, gx + supportRadius + 1);
+      const int sy1 = std::max(0, gy - supportRadius);
+      const int sy2 = std::min(_resY - 1, gy + supportRadius + 1);
+
+      for (int nx = sx1; nx <= sx2; ++nx)
+      {
+        for (int ny = sy1; ny <= sy2; ++ny)
+        {
+          const std::vector<tIndex> &neighbors = _pidxInGrid[idx1d(nx, ny)];
+          for (tIndex jidx : neighbors)
+          {
+            Vec2f rij = _pos[i] - _pos[jidx];
+            Real distance = rij.length();
+            if (distance < supportRadius && i != jidx)
+            {
+              Vec2f vij = _vel[i] - _vel[jidx]; // velocity difference
+              viscousForce += _nu * _m0 * vij / (_d[i] * _d[jidx]) * _kernel.grad_w(rij, distance);
+            }
+          }
+        }
+      }
+      _acc[i] += viscousForce;
+    }
+  }
+
+  void updateVelocity()
+  {
+#pragma omp parallel for schedule(dynamic)
+    for (tIndex i = 0; i < particleCount(); ++i)
+    {
+      _vel[i] += _dt * _acc[i];
+    }
+  }
+
+  void updatePosition()
+  {
+#pragma omp parallel for schedule(dynamic)
+    for (tIndex i = 0; i < particleCount(); ++i)
+    {
+      _pos[i] += _dt * _vel[i];
+    }
+  }
+
   // simple collision detection/resolution for each particle
-  void resolveCollisions()
+  void resolveCollision()
   {
     std::vector<tIndex> need_res;
     for (tIndex i = 0; i < particleCount(); ++i)
@@ -340,6 +391,16 @@ private:
     }
   }
 
+  void updateColor()
+  {
+    for (tIndex i = 0; i < particleCount(); ++i)
+    {
+      _col[i * 4 + 0] = 0.6;
+      _col[i * 4 + 1] = 0.6;
+      _col[i * 4 + 2] = _d[i] / _d0;
+    }
+  }
+
   void updateVelLine()
   {
     for (tIndex i = 0; i < particleCount(); ++i)
@@ -357,7 +418,6 @@ private:
 
   // particle data
   std::vector<Vec2f> _pos; // position
-  std::vector<Vec2f> _prev_pos; // previous position
   std::vector<Vec2f> _vel; // velocity
   std::vector<Vec2f> _acc; // acceleration
   std::vector<Real> _p;    // pressure
@@ -382,6 +442,7 @@ private:
   Real _h;  // particle spacing (i.e., diameter)
   Vec2f _g; // gravity
 
+  Real _m0; // rest mass
   Real _k;  // EOS coefficient
 
   Real _eta;
