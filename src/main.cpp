@@ -77,21 +77,16 @@ class SphSolver
 {
 public:
   explicit SphSolver(
-      const Real h = 0.5,
-      const Vec2f g = Vec2f(0, -9.8), 
-      const Real dt = 0.0005,
-      const Real k_spring = 2.0,
-      const Real k_dens = 0.1,
-      const Real k_near = 1.0,
-      const Real rho_0 = 1.0,
-      const Real alfa = 0.1,
-      const Real gamma = 0.1,
-      const Real beta = 0.1,
-      const Real sigma = 0.1
-  ) : _kernel(h), _h(h), _dt(dt), _g(g), _k_spring(k_spring), _k_dens(k_dens), _k_near(k_near), _rho_0(rho_0), _alfa(alfa), _gamma(gamma), _beta(beta), _sigma(sigma)
-  {}
+      const Real h, const Vec2f g, const Real dt, const Real k_spring,
+      const Real k_dens, const Real k_near, const Real rho_0, const Real alfa,
+      const Real gamma, const Real beta,
+      const Real sigma) : _kernel(h), _h(h), _dt(dt), _g(g), _k_spring(k_spring),
+                          _k_dens(k_dens), _k_near(k_near), _rho_0(rho_0),
+                          _alfa(alfa), _gamma(gamma), _beta(beta), _sigma(sigma)
+  {
+  }
 
-  // assume an arbitrary grid with the size of res_x*res_y; a fluid mass fill up
+  // Assume an arbitrary grid with the size of res_x*res_y; a fluid mass fill up
   // the size of f_width, f_height; each cell is sampled with 2x2 particles.
   void initScene(
       const int res_x, const int res_y, const int f_width, const int f_height, const int pos_start_x = 6, const int pos_start_y = 3)
@@ -110,7 +105,7 @@ public:
     // sample fluid: circle drop
     const Real cx = 0.5 * res_x; // center
     const Real cy = 0.5 * res_y; // center
-    const Real rad = 0.1 * res_x; // radius
+    const Real rad = 4;          // radius
     for (float j = 0.; j < res_y; j += 0.5)
     {
       for (float i = 0.; i < res_x; i += 0.5)
@@ -154,8 +149,8 @@ public:
   {
     std::cout << '.' << std::flush;
 
-    buildNeighbour();
-  
+    buildNeighbours();
+
     // simulation step based on related paper (algorithm 1)
     for (tIndex i = 0; i < particleCount(); ++i)
     {
@@ -197,7 +192,7 @@ public:
   int resY() const { return _resY; }
 
 private:
-  void buildNeighbour()
+  void buildNeighbours()
   {
     _pidxInGrid.clear();
     _pidxInGrid.resize(_resX * _resY);
@@ -214,8 +209,8 @@ private:
     }
   }
 
-  // getNeighbourBounds
-  std::tuple<int, int, int, int> getNeighbourBounds(const tIndex i) {
+  std::tuple<int, int, int, int> getNeighbourBounds(const tIndex i)
+  {
     const int supportRadius = static_cast<int>(_kernel.supportRadius());
     const int gx = static_cast<int>(_pos[i].x);
     const int gy = static_cast<int>(_pos[i].y);
@@ -227,7 +222,8 @@ private:
     return std::make_tuple(sx1, sx2, sy1, sy2);
   }
 
-  void applyViscosity() {
+  void applyViscosity()
+  {
     const int rad = static_cast<int>(_kernel.supportRadius()); // support radius (in paper: h)
     for (tIndex i = 0; i < particleCount(); ++i)
     {
@@ -236,7 +232,7 @@ private:
       const int sy1 = std::get<2>(bounds), sy2 = std::get<3>(bounds);
       const Real sigma = 0.1;
       const Real beta = 0.1;
-      
+
       for (int gx = sx1; gx <= sx2; ++gx)
       {
         for (int gy = sy1; gy <= sy2; ++gy)
@@ -249,13 +245,15 @@ private:
             const Vec2f rij = _pos[j] - _pos[i];
             const Real r = rij.length();
             const Vec2f rij1 = rij / r;
-            if (r < rad) {
+            if (r < rad)
+            {
               const Real q = 1 - r / rad;
-              
+
               const Vec2f vel_diff = _vel[i] - _vel[j];
               const Real u = vel_diff[0] * rij1[0] + vel_diff[1] * rij1[1];
-              
-              if (u > 0) {
+
+              if (u > 0)
+              {
                 // linear and quadratic viscosity impulses
                 const Vec2f I = _dt * q * (sigma * u + beta * u * u) * rij1;
                 const Vec2f I2 = I / 2;
@@ -270,7 +268,8 @@ private:
   }
 
   // Plasticity
-  void adjustSprings() {
+  void adjustSprings()
+  {
     const int rad = static_cast<int>(_kernel.supportRadius()); // support radius (in paper: h)
     for (tIndex i = 0; i < particleCount(); ++i)
     {
@@ -302,7 +301,8 @@ private:
               if (r > _Lij[i][j] + tol_def)
               {
                 _Lij[i][j] += _dt * alfa * (r - _Lij[i][j] - tol_def);
-              } else if (r < _Lij[i][j] - tol_def)
+              }
+              else if (r < _Lij[i][j] - tol_def)
               {
                 _Lij[i][j] -= _dt * alfa * (_Lij[i][j] - tol_def - r);
               }
@@ -322,10 +322,11 @@ private:
   }
 
   // Elasticity
-  void applySpringDisplacements() {
+  void applySpringDisplacements()
+  {
     const int rad = static_cast<int>(_kernel.supportRadius()); // support radius (in paper: h)
     const Real k_spring = 2.0;
-    // for each spring (i, j)
+
     for (tIndex i = 0; i < particleCount(); ++i)
     {
       for (tIndex j = 0; j < particleCount(); ++j)
@@ -346,14 +347,15 @@ private:
     }
   }
 
-  void doubleDensityRelaxation() {
+  void doubleDensityRelaxation()
+  {
     const int rad = static_cast<int>(_kernel.supportRadius()); // support radius (in paper: h)
     for (tIndex i = 0; i < particleCount(); ++i)
     {
       Real rho = 0;
       Real rho_near = 0;
       Vec2f dx = Vec2f(0, 0);
-      
+
       std::tuple<int, int, int, int> bounds = getNeighbourBounds(i);
       const int sx1 = std::get<0>(bounds), sx2 = std::get<1>(bounds);
       const int sy1 = std::get<2>(bounds), sy2 = std::get<3>(bounds);
@@ -376,7 +378,7 @@ private:
               rho_near += q * q * q;
             }
           }
-          
+
           // compute pressure and near-pressure
           Real press = _k_dens * (rho - _rho_0);
           if (press < 0.0)
@@ -444,9 +446,9 @@ private:
   const CubicSpline _kernel;
 
   // particle data
-  std::vector<Vec2f> _pos; // position
+  std::vector<Vec2f> _pos;      // position
   std::vector<Vec2f> _prev_pos; // previous position
-  std::vector<Vec2f> _vel; // velocity
+  std::vector<Vec2f> _vel;      // velocity
 
   std::vector<std::vector<tIndex>> _pidxInGrid; // to find neighbour particles
 
@@ -467,17 +469,16 @@ private:
   Vec2f _g; // gravity
 
   Real _k_spring = 2.0; // spring constant
-  Real _k_dens = 0.1; // density constant
-  Real _k_near = 1.0; // near-density constant
-  Real _rho_0 = 1.0; // rest density
+  Real _k_dens = 0.1;   // density constant
+  Real _k_near = 1.0;   // near-density constant
+  Real _rho_0 = 1.0;    // rest density
   Real _alfa = 0.1;
   Real _gamma = 0.1;
-  Real _beta = 0.1; 
+  Real _beta = 0.1;
   Real _sigma = 0.1;
 };
 
-// SphSolver gSolver(0.08, 0.5, 1e3, Vec2f(0, -9.8), 0.01, 7.0);
-SphSolver gSolver(0.5, Vec2f(0, -9.8), 0.0005, 2.0, 0.1, 1.0, 1.0, 1.0, 0.1, 0.1, 0.1);
+SphSolver gSolver(0.5, Vec2f(0, -9.8), 0.001, 2.0, 0.1, 1.0, 1.0, 1.0, 0.1, 0.1, 0.1);
 
 void printHelp()
 {
@@ -602,7 +603,7 @@ void initOpenGL()
 
 void init()
 {
-  gSolver.initScene(30, 30, 3, 10);
+  gSolver.initScene(30, 30, 3, 10, 7, 7);
 
   initGLFW(); // Windowing system
   initOpenGL();
