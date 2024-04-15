@@ -1,1 +1,0 @@
-/usr/bin/c++ -rdynamic CMakeFiles/tpSph.dir/src/main.cpp.o CMakeFiles/tpSph.dir/dep/glad/src/glad.c.o -o tpSph  dep/glfw/src/libglfw3.a -ldl -Wl,-Bstatic -lrt -Wl,-Bdynamic -lm -ldl -lX11 -lgomp -Wl,-Bstatic -lpthread -Wl,-Bdynamic 
